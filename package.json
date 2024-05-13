@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "npx nodemon app/server.ts",
+    "build": "npm install && npx tsc"
   },
   "author": "",
   "license": "ISC",
@@ -14,6 +16,8 @@
   },
   "devDependencies": {
     "@types/socket.io": "^3.0.2",
-    "@types/ws": "^8.5.10"
+    "@types/ws": "^8.5.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
   }
 }
