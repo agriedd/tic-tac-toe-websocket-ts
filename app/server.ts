@@ -1,15 +1,27 @@
+'use strict';
+
 import { Server, WebSocketServer } from "ws";
 import { Cell, Connection, Player, Side } from "types/IGameBoard";
 import { useGameplay } from "./gameplay";
 import { useUtils } from "./utils";
 import { useGameplayServer } from "./gameplay-server";
+import * as express from "express";
+import * as path from 'path';
+import * as cors from 'cors';
+import { createServer } from 'https';
 
 let connections: Connection[] = [];
+
+const app = express();
+app.use(cors())
+app.use(express.static(path.join(__dirname, '/public')));
+
+const httpServer = createServer(app);
 
 const { getID, updateBoard, updatePlayers, updateTurn, updateScore } = useGameplayServer()
 const gameplay = useGameplay()
 
-const server: Server = new Server({ port: 4000 })
+const server: Server = new WebSocketServer({server: httpServer})
 
 const { stringify } = useUtils()
 
@@ -164,3 +176,5 @@ const getConnectionById = (id: string, connections: Connection[]): Connection | 
   return null
 
 }
+
+httpServer.listen(443, function () {});
