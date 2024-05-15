@@ -1,61 +1,112 @@
-import { Server, Socket } from "socket.io";
-import { Connection, Player, Side } from "types/IGameBoard";
+import { Server, WebSocketServer } from "ws";
+import { Cell, Connection, Player, Side } from "types/IGameBoard";
+import { useGameplay } from "./gameplay";
+import { useUtils } from "./utils";
+import { useGameplayServer } from "./gameplay-server";
 
-let players: Player[] = [];
 let connections: Connection[] = [];
 
-const io = new Server(443, {
-  cors: {
-    origin: ["https://agriedd.github.io", "https://github.io"],
-		credentials: true,
-		allowedHeaders: "*",
-  },
-});
+const { getID, updateBoard, updatePlayers, updateTurn, updateScore } = useGameplayServer()
+const gameplay = useGameplay()
 
-io.on("connection", (socket) => {
+const server: Server = new Server({ port: 4000 })
 
-  let connection: Connection = addConnection(socket)
+const { stringify } = useUtils()
 
-  socket.emit("on-connect", { id: socket.id });
+server.on('connection', function (socket, _server, req) {
 
-  if (connection) {
-    setPlayerFromConnection(socket, connection);
-  }
-
-  connection = undefined;
-});
-
-io.on("connect", (socket) => {
-	
-  socket.emit("on-connect", { id: socket.id });
   /**
-   * listenners
-   *
+   * new connections initialize
+   * 
    */
-  socket.on("wants-connections-count", function message() {
-		console.log(socket.id, "wants-connections-count");
-		updateConnectionsCount(socket)
+  socket.id = getID()
+
+  addConnection(socket)
+
+  socket.send("on-connect", { id: socket.id });
+
+  socket.on("message", (data, _isBinary) => {
+
+
+    const dataClient = bindData(data)
+    let connection
+    if (typeof dataClient != 'undefined') {
+
+      switch (dataClient.key) {
+        case 'wants-connection-id':
+          socket.send(stringify("on-connect", { id: socket.id }));
+
+          updateBoard(socket, server, true, gameplay.boards)
+          updatePlayers(socket, server, true, gameplay.players)
+          updateTurn(socket, server, true, gameplay.playerTurn)
+
+          connection = getConnectionById(socket.id, connections)
+          updateScore(socket, server, true, gameplay.score)
+
+          if (connection)
+            gameplay.setPlayerFromConnection(socket, server, connection);
+
+          updateConnectionsCount(socket, server, true)
+
+          break;
+        case 'wants-connections-count':
+          updateConnectionsCount(socket, server, false)
+          break;
+        case 'wants-board-update':
+          updateBoard(socket, server, false, gameplay.boards)
+          updatePlayers(socket, server, false, gameplay.players)
+          break;
+        case 'draw-cell':
+
+          console.log("🚀 ~ socket.on ~ socket.id:", socket.id)
+          connection = getConnectionById(socket.id, connections)
+
+          if (connection)
+            gameplay.setPlayerFromConnection(socket, server, connection);
+          gameplay.playerDraw(socket, server, dataClient.data as { x: Cell, y: Cell })
+          break;
+
+        default:
+          break;
+      }
+
+    }
+
   });
 
-  socket.on("wants-connection-id", function message() {
-		socket.emit("on-connect", { id: socket.id });
-  });
-
-  socket.on("disconnecting", () => {
+  socket.on("close", () => {
 
     console.log("disconnected", socket.id);
 
-		removeConnection(socket);
-    removeIfConnectionIsPlayer(socket);
+    gameplay.removeIfConnectionIsPlayer(socket, server, connections);
+    removeConnection(socket);
 
-    updateConnectionsCount(socket);
+    updateConnectionsCount(socket, server);
 
   });
 
-});
+})
 
-const addConnection = (socket: Socket) : Connection => {
-	let connection = {
+const bindData = (data: ArrayBuffer | Buffer | string): { key: string, data: object } | undefined => {
+  if (typeof data === 'string') {
+    try {
+      return JSON.parse(data)
+    } catch (_error) {
+      return undefined
+    }
+  } else {
+    try {
+      const buff = Buffer.from(data);
+      return JSON.parse(buff.toString())
+    } catch (_error) {
+      return undefined
+    }
+  }
+}
+
+const addConnection = (socket: WebSocketServer): Connection => {
+
+  let connection = {
     created_at: new Date().getTime(),
     id: socket.id,
   };
@@ -70,10 +121,10 @@ const addConnection = (socket: Socket) : Connection => {
     connections.push(connection);
   }
 
-	return connection
+  return connection
 }
 
-const removeConnection = (socket: Socket) => {
+const removeConnection = (socket: WebSocketServer) => {
   /**
    * remove from connections
    *
@@ -88,93 +139,28 @@ const removeConnection = (socket: Socket) => {
   }
 };
 
-const removeIfConnectionIsPlayer = (socket: Socket) => {
-  const indexPlayer = players.findIndex((player) => player.id === socket.id);
 
-  if (indexPlayer > -1) {
-    let tempPlayers: Player[] | undefined = players;
-    tempPlayers.splice(indexPlayer, 1);
-    players = [...tempPlayers];
-    tempPlayers = undefined;
+const updateConnectionsCount = (socket, server, broadcast: boolean = true) => {
+  console.log(connections);
 
-    socket.broadcast.emit("player-disconnect");
-
-    /**
-     * check if the connections is available
-     *
-     */
-    let playersId = players.map((e) => e.id);
-
-    let availableConnections = connections.filter(
-      (e) => !playersId.includes(e.id)
-    );
-
-    if (availableConnections.length > 0) {
-      let lastAvailableConnection =
-        availableConnections[availableConnections.length - 1];
-
-      setPlayerFromConnection(socket, lastAvailableConnection);
-    } else {
-      socket.broadcast.emit("waiting-player", true);
-    }
-  }
-};
-
-const setPlayerFromConnection = (socket: Socket, connection: Connection) => {
+  socket.send(stringify("on-connections-update", { count: connections.length, connections }));
   /**
-   * check side available
-   *
+   * broadcast
    */
-  if (players.length == 0) {
-    /**
-     *
-     * asign to blue side
-     *
-     */
-    players.push({
-      created_at: new Date().getTime(),
-      id: connection.id,
-      name: "Player 1",
-      side: "blue",
-    });
-
-    socket.broadcast.emit("player-on-side", {
-      id: connection.id,
-      side: "blue",
-    });
-  } else if (players.length == 1) {
-    /**
-     * asign to available side
-     *
-     */
-    let chosenSide: Side = "blue";
-
-    players.forEach((player) => {
-      chosenSide = player.side;
-    });
-
-    players.push({
-      created_at: new Date().getTime(),
-      id: connection.id,
-      name: "Player 2",
-      side: chosenSide === "blue" ? "red" : "blue",
-    });
-
-    socket.broadcast.emit("player-on-side", {
-      id: connection.id,
-      side: chosenSide === "blue" ? "red" : "blue",
-    });
-  } else {
-    socket.broadcast.emit("on-spectating", {
-      id: connection.id,
-      spectator: true,
+  if (broadcast) {
+    server.clients?.forEach(client => {
+      if (client.readyState === WebSocket.OPEN)
+        client.send(stringify("on-connections-update", { count: connections.length, connections }))
     });
   }
 };
 
-const updateConnectionsCount = (socket: Socket) => {
-	console.log(connections);
-	
-  socket.emit("on-connections-update", { count: connections.length });
-  socket.broadcast.emit("on-connections-update", { count: connections.length });
-};
+const getConnectionById = (id: string, connections: Connection[]): Connection | null => {
+
+  const index = connections.findIndex(e => e.id === id)
+  if (index > -1) {
+    return connections[index]
+  }
+  return null
+
+}
